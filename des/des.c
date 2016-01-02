@@ -26,6 +26,11 @@ uint8_t PC_1_TABLE[8 * BLOCK_SIZE - 1] =
     21, 13,  5, 28, 20, 12,  4
   };
 
+uint8_t C_D_SHIFT_TABLE[NUM_ROUNDS] =
+{
+  1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1
+};
+
 uint8_t IP_ENCODE_TABLE[8 * BLOCK_SIZE] =
   {
     58, 50, 42, 34, 26, 18, 10, 2,
@@ -43,6 +48,21 @@ uint8_t IP_DECODE_TABLE[8 * BLOCK_SIZE] =
     0
   };
 
+static uint32_t
+rotl_28bit (uint32_t x, uint8_t n)
+{
+  uint32_t ret_val = (x << 1) | (x >> (32 - 1));
+  uint8_t rotation = (ret_val & 0xF0000000) >> 28;
+  ret_val &= 0x0FFFFFFF;
+  ret_val |= rotation;
+
+  if (n > 1)
+    {
+      ret_val = rotl_28bit (ret_val, n - 1);
+    }
+
+  return ret_val;
+}
 uint8_t
 get_permuted_byte (uint8_t* buf, uint8_t* table, uint8_t byte)
 {
@@ -64,12 +84,26 @@ get_permuted_byte (uint8_t* buf, uint8_t* table, uint8_t byte)
   return permuted;
 }
 
+static uint32_t
+swap_endianness_32bit (uint32_t val)
+{
+  uint32_t ret_val = 0;
+  ret_val = (val & 0x000000FF) << 8 * 3;
+  ret_val |= (val & 0x0000FF00) << 8 * 1;
+  ret_val |= (val & 0x00FF0000) >> 8 * 1;
+  ret_val |= (val & 0xFF000000) >> 8 * 3;
+
+  return ret_val;
+}
+
 static uint8_t
 create_subkeys (uint8_t* key, uint8_t* (*subkeys)[16])
 {
   uint8_t ret = 255;
   uint8_t* permuted_key = NULL;
   uint8_t i, j;
+  uint32_t c[NUM_ROUNDS], d[NUM_ROUNDS];
+  uint32_t c_initial, d_initial;
 
   permuted_key = malloc (BLOCK_SIZE - 1);
   if (permuted_key == NULL)
@@ -81,17 +115,34 @@ create_subkeys (uint8_t* key, uint8_t* (*subkeys)[16])
     {
       permuted_key[i] = get_permuted_byte (key, PC_1_TABLE, i);
     }
+
   DBG_PRINT ("\nPermuted key: %02x %02x %02x %02x %02x %02x %02x\n",
              permuted_key[0], permuted_key[1], permuted_key[2], permuted_key[3],
              permuted_key[4], permuted_key[5], permuted_key[6]);
 
-  DBG_PRINT ("Subkeys: ");
-  for (i = 0; i < BLOCK_SIZE; ++i)
-    {
-      for (j = 0; j < 8; ++j)
-        {
+  memcpy (&c_initial, permuted_key, sizeof(uint32_t));
+  c_initial = swap_endianness_32bit (c_initial);
+  c_initial >>= 4;
 
-        }
+  memcpy (&d_initial, permuted_key + 3, sizeof(uint32_t));
+  d_initial = swap_endianness_32bit (d_initial);
+  d_initial &= 0x0FFFFFFF;
+
+  DBG_PRINT ("c_initial: %08x\n", c_initial);
+  DBG_PRINT ("d_initial: %08x\n", d_initial);
+
+  c[0] = rotl_28bit (c_initial, C_D_SHIFT_TABLE[0]);
+  d[0] = rotl_28bit (d_initial, C_D_SHIFT_TABLE[0]);
+
+  DBG_PRINT ("c[0]: %08x\t", c[0]);
+  DBG_PRINT ("d[0]: %08x\n", d[0]);
+
+  for (i = 1; i < NUM_ROUNDS; ++i)
+    {
+      c[i] = rotl_28bit (c[i - 1], C_D_SHIFT_TABLE[i - 1]);
+      d[i] = rotl_28bit (d[i - 1], C_D_SHIFT_TABLE[i - 1]);
+      DBG_PRINT ("c[%d]: %08x\t", i, c[i]);
+      DBG_PRINT ("d[%d]: %08x\n", i, d[i]);
     }
   DBG_PRINT ("\n");
 
