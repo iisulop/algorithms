@@ -26,6 +26,18 @@ uint8_t PC_1_TABLE[8 * BLOCK_SIZE - 1] =
     21, 13,  5, 28, 20, 12,  4
   };
 
+uint8_t PC_2_TABLE[] =
+  {
+    14, 17, 11, 24,  1,  5,
+     3, 28, 15,  6, 21, 10,
+    23, 19, 12,  4, 26,  8,
+    16,  7, 27, 20, 13,  2,
+    41, 52, 31, 37, 47, 55,
+    30, 40, 51, 45, 33, 48,
+    44, 49, 39, 56, 34, 53,
+    46, 42, 50, 36, 29, 32
+  };
+
 uint8_t C_D_SHIFT_TABLE[NUM_ROUNDS] =
 {
   1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1
@@ -68,18 +80,20 @@ get_permuted_byte (uint8_t* buf, uint8_t* table, uint8_t byte)
 {
   uint8_t permuted = 0;
   uint8_t i;
-  uint8_t bit_num;
+  uint8_t bit_index;
   uint8_t byte_val;
   uint8_t bit;
 
   for (i = 0; i < 8; ++i)
     {
-      bit_num = table[8 * byte + i];
-      byte_val = buf[bit_num / 8];
-      bit = ((byte_val >> (8 - (bit_num % 8))) & 0x01);
+      bit_index = table[8 * byte + i] - 1;
+      byte_val = buf[bit_index / 8];
+      bit = ((byte_val >> (7 - (bit_index % 8))) & 0x01);
 
       permuted |= (bit << (7 - i));
     }
+
+  //DBG_PRINT ("Permuted byte: #%d, %02x\n", byte, permuted);
 
   return permuted;
 }
@@ -97,13 +111,15 @@ swap_endianness_32bit (uint32_t val)
 }
 
 static uint8_t
-create_subkeys (uint8_t* key, uint8_t* (*subkeys)[16])
+create_subkeys (uint8_t* key, uint8_t* subkeys[16])
 {
   uint8_t ret = 255;
   uint8_t* permuted_key = NULL;
   uint8_t i, j;
   uint32_t c[NUM_ROUNDS], d[NUM_ROUNDS];
   uint32_t c_initial, d_initial;
+  uint8_t cd[7];
+  uint8_t tmp1, tmp2;
 
   permuted_key = malloc (BLOCK_SIZE - 1);
   if (permuted_key == NULL)
@@ -145,6 +161,39 @@ create_subkeys (uint8_t* key, uint8_t* (*subkeys)[16])
       DBG_PRINT ("d[%d]: %08x\n", i, d[i]);
     }
   DBG_PRINT ("\n");
+
+  for (i = 0; i < NUM_ROUNDS; ++i)
+    {
+      memset (cd, 0, sizeof(cd));
+      cd[0] = c[i] >> 20;
+      cd[1] |= (c[i] >> 12) & 0x000000FF;
+      cd[2] |= (c[i] >> 4) & 0x000000FF;
+      cd[3] |= (c[i] << 4) & 0x000000FF;
+      /* DBG_PRINT ("cd 1: %02x %02x %02x %02x %02x %02x %02x\n",
+         cd[0], cd[1], cd[2], cd[3], cd[4], cd[5], cd[6]); */
+      tmp2 = cd[3];
+
+      memcpy (cd + 3, &(d[i]), sizeof (d[i]));
+      tmp1 = cd[3]; cd[3] = cd[6]; cd[6] = tmp1;
+      tmp1 = cd[4]; cd[4] = cd[5]; cd[5] = tmp1;
+      /* DBG_PRINT ("cd 2: %02x %02x %02x %02x %02x %02x %02x\n",
+         cd[0], cd[1], cd[2], cd[3], cd[4], cd[5], cd[6]); */
+      cd[3] = cd[3] & 0x0F;
+      cd[3] |= tmp2 & 0xF0;
+
+      DBG_PRINT ("cd: %02x %02x %02x %02x %02x %02x %02x\n",
+                 cd[0], cd[1], cd[2], cd[3], cd[4], cd[5], cd[6]);
+
+      subkeys[i] = malloc(6 * sizeof (uint8_t));
+      for (j = 0; j < 6; ++j)
+        {
+          subkeys[i][j] = get_permuted_byte (cd, PC_2_TABLE, j);
+        }
+
+      DBG_PRINT ("K[%d]: %02x %02x %02x %02x %02x %02x\n",
+                 i, subkeys[i][0], subkeys[i][1], subkeys[i][2],
+                 subkeys[i][3], subkeys[i][4], subkeys[i][5]);
+    }
 
   ret = 0;
 
@@ -251,7 +300,7 @@ calculate_des (uint8_t* buf, uint64_t len, uint8_t* key,
       goto out;
     }
 
-  ret = create_subkeys (key, &subkeys);
+  ret = create_subkeys (key, subkeys);
   if (ret != 0)
     {
       goto out;
